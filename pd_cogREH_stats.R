@@ -39,7 +39,7 @@ inc <- read.xlsx( "_no_github/PN celkem_exp_con_final.xlsx", sheet = "VSTUP_RETE
 # get rid of the prefixes and add a variable denoting the assessment type
 for ( i in names(d) ) {
   names(d[[i]]) <- names(d[[i]]) %>% sub("^[^_]*_", "", . )
-  d[[i]][ , "assessment"] <- case_when( i == "bas" ~ "baseline", i == "ret" ~ "retest", i == "fol" ~ "follow-up" )
+  d[[i]][ , "assessment"] <- case_when( i == "bas" ~ "1baseline", i == "ret" ~ "2retest", i == "fol" ~ "3followup" )
 }
 
 # because baseline TMT-B scores were read as character rather than numeric, re-format them
@@ -120,9 +120,6 @@ write.xlsx( desc, "tabs/pd_cogREH_desc.xlsx", rowNames = T )
 # check that there's exactly one observation (or lack of thereof) in each patient/assessment pair
 with( d1, table( Code, assessment) ) %>% as.data.frame() %>% filter( Freq != 1 ) # print cells with counts different from one
 
-# re-format the assessment variable to an ordered factor
-d1$assessment <- factor( d1$assessment, levels = c("baseline","retest","follow-up"), ordered = T )
-
 # read a list of likelihoods for outcome variables
 liks <- read.csv( "tabs/likelihoods.csv", sep = "," )
 
@@ -135,32 +132,58 @@ for ( i in c( with( liks, out[lik == "binomial"] ) %>% na.omit() ) ) d1[ , i] <-
 for ( i in c( with( liks, out[lik == "gaussian"] %>% na.omit() ) ) ) d1[ , i] <- ( d1[ , i] - mean( d1[ , i], na.rm = T ) ) / sd( d1[ , i], na.rm = T )
 
 
-# ---- representation: statistical model ----
-
-# set-up predictor structures
-prds <- data.frame( nak = " ~ 1 + (1 | Code)", # 1) the "naked" model
-                    ass = " ~ 1 + assessment + (1 | Code)", # 2) the "test-retest" model
-                    grp = " ~ 1 + assessment + GROUP_EXP_CON + (1 | Code)", # 3) the "different people" model
-                    int = " ~ 1 + assessment * GROUP_EXP_CON + (1 | Code)" # 4) the "rehabilitation works" model
-                    )
+# ---- models fitting ----
 
 # prepare a set of formulas for fitting
-f <- lapply( setNames( liks$out, liks$out ), function(i) lapply( prds, function(j) paste0( i, j ) %>% as.formula ) )
-
-
-# ---- implementation: learning from the data  ----
+f <- lapply( setNames( liks$out, liks$out ), function(i) paste0( i, " ~ 1 + assessment * GROUP_EXP_CON + (1 | Code)" ) %>% as.formula )
 
 # let's fit it
 m <- lapply( setNames( names(f), names(f) ),
-             function(i)
-               lapply( setNames( names(prds), names(prds) ),
-                       function(j) {
-                         if ( with( liks, lik[ out == i ] ) == "gaussian" ) return( lmer( f[[i]][[j]], data = d1, REML = F ) )
-                         if ( with( liks, lik[ out == i ] ) == "poisson" ) return( glmer( f[[i]][[j]], data = d1, family = poisson() ) )
-                         if ( with( liks, lik[ out == i ] ) == "binomial" ) return( glmer( f[[i]][[j]], data = d1, family = binomial(), weights = rep( with( liks, ceil[ out == i ] ) , nrow(d1) ) ) )
-                       }
-                 )
-             )
+             function(i) {
+               if ( with( liks, lik[ out == i ] ) == "gaussian" ) return( lmer( f[[i]], data = d1, REML = F ) )
+               if ( with( liks, lik[ out == i ] ) == "poisson" ) return( glmer( f[[i]], data = d1, family = poisson() ) )
+               if ( with( liks, lik[ out == i ] ) == "binomial" ) return( glmer( f[[i]], data = d1, family = binomial(), weights = rep( with( liks, ceil[ out == i ] ) , nrow(d1) ) ) )
+             }
+          )
+
+# --- post-processing ----
+
+# extract parameter estimates from each model
+t2 <- lapply( setNames( liks$out, liks$out ),
+              
+              # loop through outcomes to extract coefficient estimates and tidy up the outcome for binding the results
+              function(i) summary(m[[i]])$coefficients %>%
+                as.data.frame %>% # re-format so that the ensuing functions work
+                rownames_to_column( var = "Predictor" ) %>%
+                mutate( df = ifelse( with( liks, lik[out == i] ) != "gaussian", NA, df ), .after = "Std. Error" ) %>% # add column for df for non-gaussian models
+                rename_with( ~ "Test Stat", contains("value") ) %>% # unity column names for Z and t-tests
+                rename_with( ~ "p value", contains("Pr(>|") )
+              
+              )
+
+# prepare the 
+t2 <- do.call( rbind.data.frame, t2 ) %>%
+  rownames_to_column( var = "Outcome" ) %>%
+  mutate( Outcome = substr( Outcome, 1, nchar(Outcome)-2 ) ) %>%
+  mutate( Transformation = sapply( Outcome, function(i) liks[ liks$out == i, "trans" ] ), .after = Outcome ) %>%
+  mutate( Likelihood = sapply( Outcome, function(i) liks[ liks$out == i, "lik" ] ), .after = Outcome )
+
+# extract Benjamini-Hochberg corrected threshold for a 5% FDR
+bh_thres <- data.frame(
+  # the Intercept ain't used for inferences so we will not consider it for correction
+  p = sort( t2[ t2$Predictor != "(Intercept)", "p value"] ), # order the p-values from lowest to largest
+  thres = .05 * (1:nrow( t2[ t2$Predictor != "(Intercept)", ] ) ) / nrow( t2[ t2$Predictor != "(Intercept)", ] ) # prepare BH thresholds for each p-value
+) %>%
+  # flag BH-significant p-values and extract the largest threshold (https://doi.org/10.1111/j.2517-6161.1995.tb02031.x)
+  mutate( sig = ifelse( p <= thres, T, F ) ) %>% filter( sig == T ) %>% select(thres) %>% max()
+
+# flag results that are statistically significant on 5% FDR
+t2 <- t2 %>% mutate(  `sig. (PCER = 5%)` =  ifelse( Predictor == "(Intercept)" | `p value` > .05, NA, ":-)" ),
+                      `sig. (FDR = 5%)` = ifelse( Predictor == "(Intercept)" | `p value` > bh_thres, NA, ":-)" )
+                      )
+
+# write the results into xlsx
+write.xlsx( t2, "tabs/pd_cogREH_stats.xlsx", rowNames = T )
 
 
 # ---- session info ----
