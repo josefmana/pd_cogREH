@@ -7,6 +7,7 @@ pkgs <- c( "rstudioapi", # setting working directory via RStudio API
            "tidyverse", "dplyr", # data wrangling
            "lme4", "lmerTest", # frequentist stats
            "performance", # model quality checking
+           "emmeans", # post-processing
            "openxlsx" # reading and writing .xlsx
            )
 
@@ -23,6 +24,8 @@ setwd( dirname(getSourceEditorContext()$path) )
 # prints TRUE and creates the folder if it was not present, prints NULL if the folder was already present.
 sapply( c("figs", "tabs", "sess"), function(i) if( !dir.exists(i) ) dir.create(i) )
 
+# set-up plotting theme
+theme_set( theme_minimal( base_size = 18 ) )
 
 # ---- pre-processing  ----
 
@@ -146,6 +149,7 @@ m <- lapply( setNames( names(f), names(f) ),
              }
           )
 
+
 # --- post-processing ----
 
 # extract parameter estimates from each model
@@ -184,6 +188,33 @@ t2 <- t2 %>% mutate(  `sig. (PCER = 5%)` =  ifelse( Predictor == "(Intercept)" |
 
 # write the results into xlsx
 write.xlsx( t2, "tabs/pd_cogREH_stats.xlsx", rowNames = T )
+
+
+# ---- extract figures ----
+
+# extract names of outcomes that had a p-value < .05 in at least one parameter
+sigs <- with( t2, Outcome[ `sig. (PCER = 5%)` == ":-)" ] ) %>% na.omit() %>% c() %>% unique()
+
+# prepare folders for emmeans
+sapply( c("emmip", "comp" ), function(i) if( !dir.exists( paste0("figs/",i) ) ) dir.create( paste0("figs/",i) ) )
+
+# save a figure per significant outcome
+for ( i in sigs ) {
+  
+  # plot emmeans as a typical interaction plot
+  emmip( m[[i]], GROUP_EXP_CON ~ assessment, CIs = T, type = "response" ) +
+    labs( title = i ) +
+    theme( legend.position = "bottom", plot.title =  element_text( hjust = .5 ) )
+  ggsave( paste0( "figs/emmip/",i,".jpg"), dpi = 300, width = 13.1/1.5, height = 7.24 )
+  
+  # plot emmeans with per group comparisons via CIs adjusted by Tukey
+  plot( emmeans( m[[i]], ~ assessment * GROUP_EXP_CON ), comparisons = T, by = "GROUP_EXP_CON" ) +
+    coord_flip() +
+    labs( title = i ) +
+    theme( plot.title =  element_text( hjust = .5 ) )
+  ggsave( paste0( "figs/comp/",i,".jpg"), dpi = 300, width = 13.1/1.5, height = 7.24 )
+  
+}
 
 
 # ---- session info ----
