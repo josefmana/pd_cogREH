@@ -2,4 +2,6 @@
 .Rhistory
 .RData
 .Ruserdata
-_no_github/
+
+**/.DS_Store
+_nogithub/
