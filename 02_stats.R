@@ -1,6 +1,8 @@
 # In this script we fit series of models and summarise results. The modelling strategy is that of fitting GLMMs with neuropsychology
 # outcome being predicted by group (experimental vs control), occassion (pre-test, post-test, follow-up) and their interaction
 
+# Run only after importing raw data via '00_dataprep.R' and calculating descriptives vi '01_desc.R'
+
 # list packages to be used
 pkgs <- c( "rstudioapi", "tidyverse", "dplyr", "lme4", "lmerTest", "emmeans", "openxlsx" ) 
 
@@ -24,14 +26,6 @@ theme_set( theme_minimal( base_size = 18 ) )
 d <- read.csv( "_nogithub/data/df.csv", sep = "," ) # the data set
 l <- read.csv( "_nogithub/data/liks.csv", sep = "," ) # likelihoods to use
 t <- read.csv( "tabs/textab.csv", sep = "," ) # descriptive part of the primary table
-
-
-# ---- 2do ----
-
-# exclude MDRS (subscales) from the analyses
-# prepare big descriptive table in format: each cell = "mean (sd)", columns = "EXP1,EXP2,EXP3,CON1,CON2,CON3|stat.results (only p < .05)"
-# add full-blown stat table for appendix
-
 
 
 # ---- data pre-processing ----
@@ -74,7 +68,7 @@ t2 <- lapply( setNames( l$out, l$out ),
                 rownames_to_column( var = "Predictor" ) %>%
                 mutate( df = ifelse( with( l, lik[out == i] ) != "gaussian", NA, df ), .after = "Std. Error" ) %>% # add column for df for non-gaussian models
                 rename_with( ~ "Test Stat", contains("value") ) %>% # unity column names for Z and t-tests
-                rename_with( ~ "p value", contains("Pr(>|") )
+                rename_with( ~ "p.value", contains("Pr(>|") )
               
               )
 
@@ -83,57 +77,108 @@ t2 <- do.call( rbind.data.frame, t2 ) %>%
   rownames_to_column( var = "Outcome" ) %>%
   mutate( Outcome = substr( Outcome, 1, nchar(Outcome)-2 ) ) %>%
   mutate( Transformation = sapply( Outcome, function(i) l[ l$out == i, "trans" ] ), .after = Outcome ) %>%
-  mutate( Likelihood = sapply( Outcome, function(i) l[ l$out == i, "lik" ] ), .after = Outcome )
+  mutate( Likelihood = sapply( Outcome, function(i) l[ l$out == i, "lik" ] ), .after = Outcome ) %>%
+  mutate(`sig. (PCER = 5%)` =  ifelse( p.value > .05, NA, ":-)" ) )
 
 
 # ---- calculate contrasts ----
 
-# extract 1) baseline between-group comparisons, 2) group/occasion interactions and 3) occasion differences per group simple effect
-t3 <- lapply( setNames( c("b", "s", "i" ), c("baseline","simple","interaction") ),
+# extract 1) simple between-group comparisons, 2) occasion per group simple comparisons and 3) group/occasion interactions
+t3 <- lapply( setNames( c("g", "o", "i" ), c("simple_group","simple_occasion","interaction") ),
               # loop through all contrasts
               function(i)
                 lapply( setNames(l$out,l$out),
                         # loop through all outcomes
                         function(j) {
                           # fill-in baseline differences
-                          if ( i == "b" ) return( pairs( emmeans( m[[j]], ~ GROUP_EXP_CON | assessment ), simple = "GROUP_EXP_CON" ) %>% as.data.frame() %>% `colnames<-` ( sub( "t.ratio|z.ratio", "test.stat", colnames(.) ) ) %>% filter( assessment == "1baseline" ) )
-                          if ( i == "s" ) return( pairs( emmeans( m[[j]], ~ GROUP_EXP_CON | assessment ), simple = "assessment" ) %>% as.data.frame() %>% `colnames<-` ( sub( "t.ratio|z.ratio", "test.stat", colnames(.) ) ) )
-                          if ( i == "i" ) return( contrast( emmeans( m[[j]], ~ GROUP_EXP_CON * assessment ), interaction = c("consec","revpairwise") ) %>% as.data.frame() %>% `colnames<-` ( sub( "t.ratio|z.ratio", "test.stat", colnames(.) ) ) )
-                        }
-                      ) %>%
-                # pool all contrast per outcome
-                do.call( rbind.data.frame, . ) %>% rownames_to_column( "outcome" ) %>%
-                mutate( outcome = sub( "\\..*", "", outcome ), .before = 1 ) %>%
-                mutate(`sig. (PCER = 5%)` =  ifelse( p.value > .05, NA, "*" ) )
+                          if ( i == "g" ) return( pairs( emmeans( m[[j]], ~ GROUP_EXP_CON | assessment ), simple = "GROUP_EXP_CON", reverse = T ) )
+                          if ( i == "o" ) return( pairs( emmeans( m[[j]], ~ GROUP_EXP_CON | assessment ), simple = "assessment", reverse = T ) )
+                          if ( i == "i" ) return( contrast( emmeans( m[[j]], ~ GROUP_EXP_CON * assessment ), interaction = c("consec","revpairwise") ) )
+                        } 
+                      )
               )
 
-# extract Benjamini-Hochberg corrected threshold for a 5% FDR in interaction contrasts
-bh_thres <- data.frame( p = sort( t3$interaction[ , "p.value"] ), # order the p-values from lowest to largest
-                        thres = .05 * (1:nrow(t3$interaction) ) / nrow(t3$interaction) # prepare BH thresholds for each p-value
-                        ) %>%
-  # flag BH-significant p-values and extract the largest threshold (https://doi.org/10.1111/j.2517-6161.1995.tb02031.x)
-  mutate( sig = ifelse( p <= thres, T, F ) ) %>% filter( sig == T ) %>% select(thres) %>% max()
+# loop through t3 and format all subtables
+for ( i in names(t3) ) {
+  
+  # align column names withing each contrast for all outcomes
+  for ( j in l$out ) t3[[i]][[j]] <- t3[[i]][[j]] %>%
+      as.data.frame() %>%
+      `colnames<-` ( c("contrast","condition","estimate","SE","df","test.stat","p.value") )
+  
+  # create a single table for each contrast
+  t3[[i]] <- t3[[i]] %>%
+    do.call( rbind.data.frame, . ) %>%
+    rownames_to_column( "outcome" ) %>% # add outcome name
+    mutate( outcome = sub( "\\..*", "", outcome ), .before = 1 ) %>% # format outcome name
+    mutate(`sig. (PCER = 5%)` =  ifelse( p.value > .05, NA, ":-)" ) ) # add per comparison error rate (PCER) 5% significance flags
 
+}
+
+# ---- keeping FDR correction out of the way as there was no significant results on 5% level (just report as unclear) ----
+
+# extract Benjamini-Hochberg corrected threshold for a 5% FDR for interaction contrasts
+#bh_thres <- data.frame( p = sort( t3$interaction[ , "p.value"] ), # order the p-values from lowest to largest
+#                        thres = .05 * (1:nrow(t3$interaction) ) / nrow(t3$interaction) # prepare BH thresholds for each p-value
+#                        ) %>%
+#  # flag BH-significant p-values and extract the largest threshold (https://doi.org/10.1111/j.2517-6161.1995.tb02031.x)
+#  mutate( sig = ifelse( p <= thres, T, F ) ) %>% filter( sig == T ) %>% select(thres) %>% max()
+#
 # flag results that are statistically significant on 5% FDR
-t3$interaction <- t3$interaction %>% mutate(`sig. (FDR = 5%)` = ifelse( p.value > bh_thres, NA, "*" ) )
+#t3$interaction <- t3$interaction %>% mutate(`sig. (FDR = 5%)` = ifelse( p.value > bh_thres, "-", ":-)" ) )
 
 
 # ---- add significant contrasts to the main table ----
 
-# extract names of outcomes that had a p-value < .05 in at least one parameter
-sigs <- with( t3, outcome[ `sig. (PCER = 5%)` == ":-)" ] ) %>% na.omit() %>% c() %>% unique()
+# extract texts for all PCER significant contrasts
+txt <- full_join( do.call( rbind.data.frame, t3[1:2] ) %>% add_column( type = "simple" ),
+                  t3$interaction %>% add_column( type = "interaction" )
+                  ) %>%
+  
+  # add reports of significant effects
+  mutate(
+    txt = case_when(
+      type == "interaction" ~ case_when(
+        `p.value` < .05 & estimate < 0 ~ paste0( "[ (", contrast, ") * (", condition, " ) ] < 0" ),
+        `p.value` < .05 & estimate > 0 ~ paste0( "[ (", contrast, ") * (", condition, " ) ] > 0" )
+      ),
+      type == "simple" ~ case_when(
+        `p.value` < .05 & estimate < 0 ~ paste0( sub( "-", "<", contrast ), " | ", condition ),
+        `p.value` < .05 & estimate > 0 ~ paste0( sub( "-", ">", contrast ), " | ", condition )
+      )
+    )
+  ) %>%
+  
+  # keep only the texts for further procesing
+  select( outcome, txt ) %>%
+  filter( complete.cases( txt ) )
+
+# add likelihoods, transformations and significant contrasts summary
+t <- t %>%
+  # for each column, loop through all outcomes but age and education which were not compared
+  mutate( likelihood = c( "-", "-", sapply( outcome[-c(1,2)], function(i) with( l, lik[out == i] ) ) ),
+          transformation = c( "-", "-", sapply( outcome[-c(1,2)], function(i) with( l, trans[out == i] ) ) ),
+          sig_results = c( "-", "-", sapply( outcome[-c(1,2)], function(i) with( txt, paste( txt[outcome == i], collapse = "\n" ) ) ) )
+          )
 
 
-
+# ---- export tables ----
 
 # write the results into xlsx
-write.xlsx( t2, "tabs/stats.xlsx", rowNames = T )
+write.xlsx( list( texttab = t,
+                  parameters = t2,
+                  interactions = t3$interaction,
+                  simple_group = t3$simple_group,
+                  simple_occasion = t3$simple_occasion
+                  ),
+            
+            "tabs/stats.xlsx", rowNames = F )
 
 
 # ---- extract figures ----
 
 # extract names of outcomes that had a p-value < .05 in at least one parameter
-sigs <- with( t2, Outcome[ `sig. (PCER = 5%)` == ":-)" ] ) %>% na.omit() %>% c() %>% unique()
+sigs <- with( full_join( t3$interaction, do.call( rbind.data.frame, t3[1:2] ) ), outcome[ `sig. (PCER = 5%)` == "*" ] ) %>% na.omit() %>% c() %>% unique()
 
 # prepare folders for emmeans
 sapply( c("emmip", "comp" ), function(i) if( !dir.exists( paste0("figs/",i) ) ) dir.create( paste0("figs/",i) ) )
@@ -160,4 +205,4 @@ for ( i in sigs ) {
 # ---- session info ----
 
 # write the sessionInfo() into a .txt file
-capture.output( sessionInfo(), file = "sess/pd_cogREH_stats_sessinfo.txt" )
+capture.output( sessionInfo(), file = "sess/stats.txt" )

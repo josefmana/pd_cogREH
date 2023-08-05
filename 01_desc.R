@@ -1,6 +1,8 @@
 # In this script we extract descriptive statistics of the sample used for analysis of neuropsychological outcomes of cognitive
 # rehabilitation including exporting tables for reporting in a final manuscript
 
+# Run only after importing raw data via '00_dataprep.R'
+
 # list packages to be used
 pkgs <- c( "rstudioapi", "tidyverse", "dplyr", "openxlsx" )
 
