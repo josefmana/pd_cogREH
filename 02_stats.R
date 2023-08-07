@@ -156,9 +156,9 @@ txt <- full_join( do.call( rbind.data.frame, t3[1:2] ) %>% add_column( type = "s
 # add likelihoods, transformations and significant contrasts summary
 t <- t %>%
   # for each column, loop through all outcomes but age and education which were not compared
-  mutate( likelihood = c( "-", "-", sapply( outcome[-c(1,2)], function(i) with( l, lik[out == i] ) ) ),
-          transformation = c( "-", "-", sapply( outcome[-c(1,2)], function(i) with( l, trans[out == i] ) ) ),
-          sig_results = c( "-", "-", sapply( outcome[-c(1,2)], function(i) with( txt, paste( txt[outcome == i], collapse = "\n" ) ) ) )
+  mutate( likelihood = sapply( outcome, function(i) with( l, lik[out == i] ) ),
+          transformation = sapply( outcome, function(i) with( l, trans[out == i] ) ),
+          sig_results = sapply( outcome, function(i) with( txt, paste( txt[outcome == i], collapse = "\n" ) ) )
           )
 
 
@@ -206,3 +206,4 @@ for ( i in sigs ) {
 
 # write the sessionInfo() into a .txt file
 capture.output( sessionInfo(), file = "sess/stats.txt" )
+

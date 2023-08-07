@@ -21,13 +21,14 @@ sapply( c("figs", "tabs", "sess", "_nogithub", "_nogithub/data"), function(i) if
 
 # read the data
 d <- read.csv( "_nogithub/data/df.csv", sep = "," ) # the data set
+l <- read.csv( "_nogithub/data/liks.csv", sep = "," ) # likelihoods to choose appropriate descriptives
 rows <- c( "Age", "Years_of_education", read.csv( "_nogithub/data/liks.csv", sep = "," )$out ) # variables to describe
 
 
 # ---- descriptive statistics mining ----
 
 # prepare a data frame for descriptive stats
-desc <- lapply( data.frame( n = "n", mean = "mean", sd = "sd", median = "median", min = "min", max = "max" ),
+desc <- lapply( data.frame( n = "n", mean = "mean", sd = "sd", median = "median", IQR = "IQR", min = "min", max = "max" ),
                 # for each stat set-up a data.frame
                 function(i)
                   matrix(
@@ -67,11 +68,17 @@ write.xlsx( desc, "tabs/desc.xlsx", rowNames = T )
 t <- sapply( colnames(desc$n),
              # loop through all group/occasion combinations
              function(i)
-               # print results as M (SD)
-               paste0( sprintf( "%.2f", round( desc$mean[,i], 2 ) ), " (", sprintf( "%.2f", round( desc$sd[,i], 2 ) ), ")" )
+               # print results conditional on models likelihood
+               sapply(
+                 rows[-c(1:2)], function(j)
+                   case_when(
+                     with(l, lik[out == j] ) != "binomial" ~ paste0( sprintf( "%.2f", round( desc$mean[j,i], 2 ) ), " ± ", sprintf( "%.2f", round( desc$sd[j,i], 2 ) ) ),
+                     with(l, lik[out == j] ) == "binomial" ~ paste0( sprintf( "%.2f", round( desc$median[j,i], 2 ) ), " (", sprintf( "%.2f", round( desc$IQR[j,i], 2 ) ), ")" )
+                   )
+                )
              ) %>%
   # add variable names
-  `rownames<-`( rows ) %>% as.data.frame() %>% rownames_to_column( "outcome" )
+  `rownames<-`( rows[-c(1:2)] ) %>% as.data.frame() %>% rownames_to_column( "outcome" )
 
 # save as .csv
 write.table( t, "tabs/textab.csv", sep = ",", row.names = F, quote = F )
@@ -81,4 +88,3 @@ write.table( t, "tabs/textab.csv", sep = ",", row.names = F, quote = F )
 
 # write the sessionInfo() into a .txt file
 capture.output( sessionInfo(), file = "sess/desc.txt" )
-
