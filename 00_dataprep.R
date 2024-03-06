@@ -1,7 +1,7 @@
 # In this script we prepare data set of neuropsychological outcomes after cognitive rehabilitation in a suitable format.
 
 # list packages to be used
-pkgs <- c( "rstudioapi", "tidyverse", "dplyr", "openxlsx" )
+pkgs <- c("rstudioapi","tidyverse","dplyr","openxlsx")
 
 # load or install each of the packages as needed
 for (i in pkgs) {

@@ -4,7 +4,7 @@
 # Run only after importing raw data via '00_dataprep.R' and calculating descriptives vi '01_desc.R'
 
 # list packages to be used
-pkgs <- c( "rstudioapi", "tidyverse", "dplyr", "lme4", "lmerTest", "emmeans", "openxlsx" ) 
+pkgs <- c("rstudioapi","tidyverse","dplyr","purrr","lme4","lmerTest","emmeans","openxlsx","gt")
 
 # load or install each of the packages as needed
 for (i in pkgs) {
@@ -21,6 +21,9 @@ sapply( c("figs", "tabs", "sess"), function(i) if( !dir.exists(i) ) dir.create(i
 
 # set-up plotting theme
 theme_set( theme_minimal( base_size = 18 ) )
+
+# in-house function for printing rounded numbers
+rprint <- function(x,dec) sprintf( paste0("%.",dec,"f"), round(x,dec) )
 
 # read the data
 d <- read.csv( "_nogithub/data/df.csv", sep = "," ) # the data set
@@ -70,10 +73,10 @@ t2 <- lapply( setNames( l$out, l$out ),
                 rename_with( ~ "Test Stat", contains("value") ) %>% # unity column names for Z and t-tests
                 rename_with( ~ "p.value", contains("Pr(>|") )
               
-              )
-
-# finish the table
-t2 <- do.call( rbind.data.frame, t2 ) %>%
+              ) %>%
+  
+  # finish the table
+  do.call( rbind.data.frame, . ) %>%
   rownames_to_column( var = "Outcome" ) %>%
   mutate( Outcome = substr( Outcome, 1, nchar(Outcome)-2 ) ) %>%
   mutate( Transformation = sapply( Outcome, function(i) l[ l$out == i, "trans" ] ), .after = Outcome ) %>%
@@ -91,9 +94,9 @@ t3 <- lapply( setNames( c("g", "o", "i" ), c("simple_group","simple_occasion","i
                         # loop through all outcomes
                         function(j) {
                           # fill-in baseline differences
-                          if ( i == "g" ) return( pairs( emmeans( m[[j]], ~ GROUP_EXP_CON | assessment ), simple = "GROUP_EXP_CON", reverse = T ) )
-                          if ( i == "o" ) return( pairs( emmeans( m[[j]], ~ GROUP_EXP_CON | assessment ), simple = "assessment", reverse = T ) )
-                          if ( i == "i" ) return( contrast( emmeans( m[[j]], ~ GROUP_EXP_CON * assessment ), interaction = c("consec","revpairwise") ) )
+                          if ( i == "g" ) return( pairs( emmeans( m[[j]], ~ GROUP_EXP_CON | assessment ), simple = "GROUP_EXP_CON", reverse = T, type = "response" ) )
+                          if ( i == "o" ) return( pairs( emmeans( m[[j]], ~ GROUP_EXP_CON | assessment ), simple = "assessment", reverse = T, type = "response" ) )
+                          if ( i == "i" ) return( contrast( emmeans( m[[j]], ~ GROUP_EXP_CON * assessment ), interaction = c("consec","revpairwise"), type = "response" ) )
                         } 
                       )
               )
@@ -104,14 +107,30 @@ for ( i in names(t3) ) {
   # align column names withing each contrast for all outcomes
   for ( j in l$out ) t3[[i]][[j]] <- t3[[i]][[j]] %>%
       as.data.frame() %>%
+      select( !contains("null") ) %>% # added for the ORs
       `colnames<-` ( c("contrast","condition","estimate","SE","df","test.stat","p.value") )
   
   # create a single table for each contrast
   t3[[i]] <- t3[[i]] %>%
+    
     do.call( rbind.data.frame, . ) %>%
     rownames_to_column( "outcome" ) %>% # add outcome name
     mutate( outcome = sub( "\\..*", "", outcome ), .before = 1 ) %>% # format outcome name
-    mutate(`sig. (PCER = 5%)` =  ifelse( p.value > .05, NA, ":-)" ) ) # add per comparison error rate (PCER) 5% significance flags
+    mutate( outcome = ifelse( outcome == "Total_", "Total_.AVLT.1_5", outcome ) ) %>% # return RAVLT total name back
+    mutate(`sig. (PCER = 5%)` =  ifelse( p.value > .05, NA, ":-)" ) ) %>% # add per comparison error rate (PCER) 5% significance flags
+    
+    # add for text/appendix table information
+    mutate(
+      
+      across( all_of( c("estimate","SE","df") ), ~ rprint(.x,2) ),
+      test.stat = rprint(test.stat,3),
+      p.value = ifelse( p.value < .001, " < .001", paste0( "= ", substr( rprint(p.value,3), 2, 5 ) ) ),
+      
+      contr = case_when(
+        grepl( " - ", contrast ) ~ paste0( "b = ", estimate," (",SE,"), ","t(",df,") = ",test.stat,", p ",p.value ),
+        grepl( " / ", contrast ) ~ paste0( "OR = ", estimate," (",SE,"), ","Z = ",test.stat,", p ",p.value )
+      ) 
+    )
 
 }
 
@@ -127,6 +146,73 @@ for ( i in names(t3) ) {
 # flag results that are statistically significant on 5% FDR
 #t3$interaction <- t3$interaction %>% mutate(`sig. (FDR = 5%)` = ifelse( p.value > bh_thres, "-", ":-)" ) )
 
+
+# ---- appendix table with simple contrast statistics ----
+
+# prepare a formatted table with all descriptive and inferential stats
+t4 <- list(
+  
+  # stat table for simple occasion contrasts
+  t3$simple_occasion %>%
+    mutate(
+      contrast =
+        case_when(
+          contrast %in% paste0("2retest ",c("-","/")," 1baseline") ~ "21",
+          contrast %in% paste0("3followup ",c("-","/")," 2retest") ~ "31",
+          contrast %in% paste0("3followup ",c("-","/")," 1baseline") ~ "32"
+        )
+    ) %>%
+    select(outcome,condition,contrast,contr) %>%
+    pivot_wider( values_from = contr, names_from = c(condition,contrast), names_prefix = "occasion_" ),
+  
+  # stat table for simple group contrasts
+  t3$simple_group %>%
+    select(outcome,condition,contr) %>%
+    pivot_wider( values_from = contr, names_from = condition, names_prefix = "group_" )
+
+) %>%
+  
+  reduce( full_join ) %>%
+  left_join( select( t, 1,5:7, 2:4 ), ., by = "outcome" ) %>%
+  
+  # format it
+  gt() %>%
+  cols_align( columns = -1, align = "center" ) %>%
+  
+  tab_spanner( label = "EXP", columns = starts_with("EXP"), id = "EXPdesc", gather = F ) %>%
+  tab_spanner( label = "CON", columns = starts_with("CON"), id = "CONdesc", gather = F ) %>%
+  tab_spanner( label = "Descriptive statistics", columns = 2:7, gather = F ) %>%
+  
+  tab_spanner( label = "CON", columns = starts_with("occasion_CON"), id = "CONmod", gather = F ) %>%
+  tab_spanner( label = "EXP", columns = starts_with("occasion_EXP"), id = "EXPmod", gather = F ) %>%
+  tab_spanner( label = "Occasion simple contrasts", columns = starts_with("occasion") ) %>%
+  
+  tab_spanner( label = "Group simple contrasts", columns = starts_with("group") ) %>%
+  tab_spanner( label = "Generalized Linear Mixed Models' results", columns = 8:16 ) %>%
+  
+  cols_label(
+    ends_with("1baseline") ~ "Baseline",
+    ends_with("2retest") ~ "Re-test",
+    ends_with("3followup") ~ "Follow-up",
+    ends_with("21") ~ "Re-test-minus-Baseline",
+    ends_with("31") ~ "Follow-up-minus-Baseline",
+    ends_with("32") ~ "Follow-up-minus-Re-test",
+    "outcome" ~ ""
+  ) %>%
+  
+  tab_footnote(
+    locations = cells_column_spanners("Descriptive statistics"),
+    footnote = "Data are presented as mean ± standard deviation for continuous variables and as median (interquantile range) for count variables."
+  ) %>%
+  tab_footnote(
+    locations = cells_column_spanners("Generalized Linear Mixed Models' results"),
+    footnote = "Results indicate expected difference (b) or odds ratio (OR) with resulting test statistic (t-statistic with degrees of freedom in brackets or Z statistic) and p-values."
+  ) %>%
+  tab_footnote( locations = cells_column_spanners("Group simple contrasts"), footnote = "EXP-minus-CON." )
+
+# save it
+gtsave( t4, "tabs/bigtab.docx" )
+  
 
 # ---- add significant contrasts to the main table ----
 
